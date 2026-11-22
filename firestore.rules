@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Troque pelo UID da Geissy (Firebase Console > Authentication > Users)
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.uid == 'MxYXDLiTKbSc1iLS2PneMl0zTOw1';
+    }
+
+    // Valida um agendamento criado por visitante: campos permitidos, tamanhos,
+    // formatos e preço/nome/duração conferidos com o serviço real no banco.
+    function validAppointment(d) {
+      let s = get(/databases/$(database)/documents/services/$(d.servicoId)).data;
+      return d.keys().hasOnly(['clienteNome','clienteTelefone','servicoId',
+                'servicoNome','preco','duracao','data','horario','observacao','status'])
+        && d.status == 'confirmado'
+        && d.clienteNome is string && d.clienteNome.size() >= 2 && d.clienteNome.size() <= 80
+        && d.clienteTelefone is string && d.clienteTelefone.size() >= 8 && d.clienteTelefone.size() <= 20
+        && d.observacao is string && d.observacao.size() <= 300
+        && d.data.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && d.horario.matches('^[0-2][0-9]:[0-5][0-9]$')
+        && d.servicoNome == s.nome
+        && d.preco == s.preco
+        && d.duracao == s.duracao;
+    }
+
+    // Públicos para leitura; só a admin altera
+    match /settings/{id}     { allow read: if true; allow write: if isAdmin(); }
+    match /services/{id}     { allow read: if true; allow write: if isAdmin(); }
+
+    // Dados pessoais, de saúde e financeiros: só a admin
+    match /clients/{id}      { allow read, write: if isAdmin(); }
+    match /transactions/{id} { allow read, write: if isAdmin(); }
+
+    // Visitante só consegue CRIAR (com validação). Não lê a agenda de ninguém.
+    match /appointments/{id} {
+      allow read, update, delete: if isAdmin();
+      allow create: if validAppointment(request.resource.data);
+    }
+
+    // Horários ocupados, sem nenhum dado pessoal. O ID fixo por bloco de 15 min
+    // (ex.: 2026-11-22_0900) impede dois agendamentos no mesmo bloco:
+    // se o documento já existe, a segunda gravação vira "update" e é negada.
+    match /busy_slots/{slotId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasOnly(['data','hora'])
+        && request.resource.data.data.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.hora.matches('^[0-2][0-9]:[0-5][0-9]$')
+        && slotId == request.resource.data.data + '_' + request.resource.data.hora.replace(':', '');
+      allow update, delete: if isAdmin();
+    }
+  }
+}

@@ -48,61 +48,6 @@ const INITIAL_SERVICES = [
   { id: '6', nome: 'Lash Lifting de Cílios', duracao: 60, preco: 85.00, descricao: 'Curvatura e tintura dos cílios naturais com tratamento de queratina.' }
 ];
 
-const INITIAL_CLIENTS = [
-  {
-    id: 'c1',
-    nome: 'Maria Eduarda Silveira',
-    telefone: '88998765432',
-    alergias: 'Alergia leve à Henna com amônia',
-    usandoAcidos: true,
-    roacutan: false,
-    observacoes: 'Pele sensível na região frontal. Prefere tom mais natural.',
-    ultimoProcedimentoData: '2026-11-05',
-    ultimoServico: 'Design com Aplicação de Henna Premium'
-  },
-  {
-    id: 'c2',
-    nome: 'Ana Clara Lima',
-    telefone: '88991234567',
-    alergias: 'Nenhuma',
-    usandoAcidos: false,
-    roacutan: false,
-    observacoes: 'Gosta do arco bem marcado.',
-    ultimoProcedimentoData: '2026-10-28',
-    ultimoServico: 'Brow Lamination & Nutrição'
-  }
-];
-
-const INITIAL_APPOINTMENTS = [
-  {
-    id: 'apt-1',
-    clienteNome: 'Maria Eduarda Silveira',
-    clienteTelefone: '88998765432',
-    servicoId: '1',
-    servicoNome: 'Design de Sobrancelhas Personalizado',
-    preco: 35.00,
-    data: '2026-11-22',
-    horario: '09:00',
-    status: 'confirmado'
-  },
-  {
-    id: 'apt-2',
-    clienteNome: 'Ana Clara Lima',
-    clienteTelefone: '88991234567',
-    servicoId: '3',
-    servicoNome: 'Brow Lamination & Nutrição',
-    preco: 90.00,
-    data: '2026-11-22',
-    horario: '10:30',
-    status: 'confirmado'
-  }
-];
-
-const INITIAL_TRANSACTIONS = [
-  { id: 't1', tipo: 'receita', descricao: 'Atendimento - Maria Eduarda', valor: 35.00, data: '2026-11-22' },
-  { id: 't2', tipo: 'despesa', descricao: 'Reposição de Kit Cera & Algodão', valor: 45.00, data: '2026-11-20' }
-];
-
 const INITIAL_CONFIG = {
   studioName: 'Geissy Silva Studio',
   ownerName: 'Geissy Silva',
@@ -121,6 +66,38 @@ const getTodayLocalStr = () => {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 };
 
+// UID da conta admin (não é segredo; a proteção real está nas regras do Firestore)
+const ADMIN_UID = import.meta.env.VITE_ADMIN_UID;
+
+// --- BLOCOS DE HORÁRIO (15 min) usados na coleção pública busy_slots ---
+const toHHMM = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const slotId = (data, hora) => `${data}_${hora.replace(':', '')}`;
+const slotTimes = (horario, duracao) => {
+  const [h, m] = horario.split(':').map(Number);
+  const start = h * 60 + m;
+  const out = [];
+  for (let t = start; t < start + duracao; t += 15) out.push(toHHMM(t));
+  return out;
+};
+
+// Escapa célula de CSV e neutraliza fórmulas (= + - @)
+const csvCell = (v) => {
+  let str = String(v ?? '');
+  if (/^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+  return `"${str.replace(/"/g, '""')}"`;
+};
+
+// Grava operações em lotes (limite do Firestore: 500 por batch)
+const commitInChunks = async (ops) => {
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = writeBatch(db);
+    ops.slice(i, i + 400).forEach((op) =>
+      op.type === 'delete' ? batch.delete(op.ref) : batch.set(op.ref, op.data)
+    );
+    await batch.commit();
+  }
+};
+
 export default function App() {
   // --- ESTADOS DE NAVEGAÇÃO E AUTENTICAÇÃO ---
   const [activeTab, setActiveTab] = useState('public_booking');
@@ -131,10 +108,11 @@ export default function App() {
 
   // --- DADOS SINCRONIZADOS COM FIRESTORE ---
   const [config, setConfig] = useState(INITIAL_CONFIG);
-  const [services, setServices] = useState(INITIAL_SERVICES);
+  const [services, setServices] = useState([]);
   const [clients, setClients] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [busySlots, setBusySlots] = useState([]);
 
   // --- RELÓGIO INTERNO PARA ATUALIZAR HORÁRIOS PASSADOS AUTOMATICAMENTE ---
   const [currentMinuteTick, setCurrentMinuteTick] = useState(() => {
@@ -153,43 +131,68 @@ export default function App() {
   // --- MONITORAR LOGIN ADMIN ---
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
+      // Cosmético: a proteção real é feita pelas regras do Firestore (UID do admin)
+      if (user && ADMIN_UID && user.uid !== ADMIN_UID) {
+        signOut(auth);
+        setAdminUser(null);
+        return;
+      }
       setAdminUser(user);
     });
     return () => unsub();
   }, []);
 
-  // --- ESCUTAR ALTERAÇÕES EM TEMPO REAL NO FIRESTORE ---
+  // --- LISTENERS PÚBLICOS (qualquer visitante): config, serviços e horários ocupados ---
   useEffect(() => {
+    const onErr = (err) => console.error('Firestore (público):', err);
+
     const unsubConfig = onSnapshot(doc(db, 'settings', 'studio_config'), (snap) => {
-      if (snap.exists()) setConfig(snap.data());
-    });
+      if (snap.exists()) setConfig({ ...INITIAL_CONFIG, ...snap.data() });
+    }, onErr);
 
     const unsubServices = onSnapshot(collection(db, 'services'), (snap) => {
-      if (!snap.empty) {
-        setServices(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      }
-    });
+      setServices(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, onErr);
 
-    const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
-      setClients(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-
-    const unsubAppointments = onSnapshot(collection(db, 'appointments'), (snap) => {
-      setAppointments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-
-    const unsubTransactions = onSnapshot(collection(db, 'transactions'), (snap) => {
-      setTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
+    const unsubBusy = onSnapshot(collection(db, 'busy_slots'), (snap) => {
+      setBusySlots(snap.docs.map((d) => d.data()));
+    }, onErr);
 
     return () => {
       unsubConfig();
       unsubServices();
+      unsubBusy();
+    };
+  }, []);
+
+  // --- LISTENERS ADMIN: dados pessoais e financeiros, só com login ---
+  useEffect(() => {
+    if (!adminUser) {
+      setClients([]);
+      setAppointments([]);
+      setTransactions([]);
+      return;
+    }
+    const onErr = (err) => console.error('Firestore (admin):', err);
+
+    const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
+      setClients(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, onErr);
+
+    const unsubAppointments = onSnapshot(collection(db, 'appointments'), (snap) => {
+      setAppointments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, onErr);
+
+    const unsubTransactions = onSnapshot(collection(db, 'transactions'), (snap) => {
+      setTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, onErr);
+
+    return () => {
       unsubClients();
       unsubAppointments();
       unsubTransactions();
     };
-  }, []);
+  }, [adminUser]);
 
   // --- ESTADO DO FLUXO DE AGENDAMENTO PÚBLICO ---
   const [selectedService, setSelectedService] = useState(null);
@@ -198,6 +201,8 @@ export default function App() {
   const [clientForm, setClientForm] = useState({ nome: '', telefone: '', observacao: '' });
   const [completedBooking, setCompletedBooking] = useState(null);
   const [bookingStep, setBookingStep] = useState(1);
+  const [consent, setConsent] = useState(false);
+  const [bookingBusy, setBookingBusy] = useState(false);
 
   // --- ESTADOS ADMIN ---
   const [filterDate, setFilterDate] = useState(getTodayLocalStr);
@@ -232,7 +237,11 @@ export default function App() {
       setActiveTab('admin_agenda');
       showToast('Bem-vinda de volta, Geissy!');
     } catch (err) {
-      showToast('E-mail ou senha inválidos. Verifique seus dados.');
+      showToast(
+        err?.code === 'auth/too-many-requests'
+          ? 'Muitas tentativas. Aguarde alguns minutos e tente de novo.'
+          : 'E-mail ou senha inválidos. Verifique seus dados.'
+      );
     } finally {
       setLoginLoading(false);
     }
@@ -244,19 +253,124 @@ export default function App() {
     showToast('Sessão encerrada.');
   };
 
-  // --- ALTERAR STATUS DO AGENDAMENTO (CONFIRMADO / ATENDIDO / CANCELADO) ---
-  const handleUpdateAppointmentStatus = async (aptId, newStatus) => {
+  // --- AÇÕES ADMIN SOBRE AGENDAMENTOS ---
+  const getAptDuration = (apt) =>
+    Number(apt.duracao) || services.find((s) => s.id === apt.servicoId)?.duracao || 30;
+
+  const handleUpdateAppointmentStatus = async (apt, newStatus) => {
     try {
-      await updateDoc(doc(db, 'appointments', aptId), { status: newStatus });
-      const labels = {
-        confirmado: 'Confirmado',
-        atendido: 'Atendido',
-        cancelado: 'Cancelado'
-      };
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'appointments', apt.id), { status: newStatus });
+      const horas = slotTimes(apt.horario, getAptDuration(apt));
+      if (newStatus === 'cancelado') {
+        horas.forEach((h) => batch.delete(doc(db, 'busy_slots', slotId(apt.data, h))));
+      } else if (apt.status === 'cancelado') {
+        horas.forEach((h) =>
+          batch.set(doc(db, 'busy_slots', slotId(apt.data, h)), { data: apt.data, hora: h })
+        );
+      }
+      await batch.commit();
+      const labels = { confirmado: 'Confirmado', atendido: 'Atendido', cancelado: 'Cancelado' };
       showToast(`Status alterado para ${labels[newStatus] || newStatus}!`);
     } catch (error) {
       console.error(error);
       showToast('Erro ao atualizar status do agendamento.');
+    }
+  };
+
+  const handleDeleteAppointment = async (apt) => {
+    if (!window.confirm(`Excluir o agendamento de ${apt.clienteNome} (${formatDateBR(apt.data)} às ${apt.horario})? Esta ação não pode ser desfeita.`)) return;
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'appointments', apt.id));
+      // Se já estava cancelado, os blocos já foram liberados (e podem ser de outra reserva)
+      if (apt.status !== 'cancelado') {
+        slotTimes(apt.horario, getAptDuration(apt)).forEach((h) =>
+          batch.delete(doc(db, 'busy_slots', slotId(apt.data, h)))
+        );
+      }
+      await batch.commit();
+      showToast('Agendamento excluído.');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao excluir agendamento.');
+    }
+  };
+
+  const handleRegisterClientFromApt = async (apt) => {
+    try {
+      const tel = (apt.clienteTelefone || '').replace(/\D/g, '');
+      const existing = clients.find((c) => (c.telefone || '').replace(/\D/g, '') === tel);
+      if (existing) {
+        await updateDoc(doc(db, 'clients', existing.id), {
+          ultimoProcedimentoData: apt.data,
+          ultimoServico: apt.servicoNome
+        });
+        showToast('Ficha da cliente atualizada.');
+      } else {
+        await addDoc(collection(db, 'clients'), {
+          nome: apt.clienteNome,
+          telefone: apt.clienteTelefone,
+          alergias: 'Não informada',
+          usandoAcidos: false,
+          roacutan: false,
+          observacoes: apt.observacao || '',
+          ultimoProcedimentoData: apt.data,
+          ultimoServico: apt.servicoNome
+        });
+        showToast('Cliente cadastrada! Complete a anamnese na aba Clientes.');
+      }
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao salvar a ficha da cliente.');
+    }
+  };
+
+  const handleDeleteTransaction = async (id) => {
+    if (!window.confirm('Remover este lançamento do caixa?')) return;
+    try {
+      await deleteDoc(doc(db, 'transactions', id));
+      showToast('Lançamento removido.');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao remover lançamento.');
+    }
+  };
+
+  // Recria os blocos ocupados a partir dos agendamentos futuros e limpa datas passadas
+  const syncBusySlots = async () => {
+    if (!window.confirm('Recriar os horários ocupados a partir dos agendamentos futuros e limpar datas passadas?')) return;
+    try {
+      const today = getTodayLocalStr();
+      const ops = [];
+      appointments
+        .filter((a) => a.data >= today && a.status !== 'cancelado')
+        .forEach((a) =>
+          slotTimes(a.horario, getAptDuration(a)).forEach((h) =>
+            ops.push({ type: 'set', ref: doc(db, 'busy_slots', slotId(a.data, h)), data: { data: a.data, hora: h } })
+          )
+        );
+      busySlots
+        .filter((b) => b.data < today)
+        .forEach((b) => ops.push({ type: 'delete', ref: doc(db, 'busy_slots', slotId(b.data, b.hora)) }));
+      await commitInChunks(ops);
+      showToast('Horários sincronizados.');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao sincronizar horários.');
+    }
+  };
+
+  const handleSeedServices = async () => {
+    if (!window.confirm('Cadastrar os serviços sugeridos no banco de dados?')) return;
+    try {
+      const batch = writeBatch(db);
+      INITIAL_SERVICES.forEach(({ id, ...data }) => batch.set(doc(db, 'services', id), data));
+      await batch.commit();
+      showToast('Serviços cadastrados.');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao cadastrar serviços.');
     }
   };
 
@@ -279,22 +393,14 @@ export default function App() {
     const isToday = selectedDate === todayStr;
     const isPastDate = selectedDate < todayStr;
 
-    const bookedOnDate = appointments.filter(a => a.data === selectedDate && a.status !== 'cancelado');
+    const busyOnDate = new Set(busySlots.filter(b => b.data === selectedDate).map(b => b.hora));
 
     while (current + selectedService.duracao <= endMinutes) {
       const currentEnd = current + selectedService.duracao;
       const isPastTime = isPastDate || (isToday && current <= currentMinuteTick);
       const isDuringLunch = (current < lunchEndMinutes && currentEnd > lunchStartMinutes);
 
-      const hasConflict = bookedOnDate.some(apt => {
-        const aptServico = services.find(s => s.id === apt.servicoId);
-        const aptDuracao = aptServico ? aptServico.duracao : 30;
-        const [aptH, aptM] = apt.horario.split(':').map(Number);
-        const aptStart = aptH * 60 + aptM;
-        const aptEnd = aptStart + aptDuracao;
-
-        return (current < aptEnd && currentEnd > aptStart);
-      });
+      const hasConflict = slotTimes(toHHMM(current), selectedService.duracao).some(h => busyOnDate.has(h));
 
       const hours = Math.floor(current / 60).toString().padStart(2, '0');
       const mins = (current % 60).toString().padStart(2, '0');
@@ -310,7 +416,7 @@ export default function App() {
     }
 
     return slots;
-  }, [selectedService, selectedDate, appointments, config, services, currentMinuteTick]);
+  }, [selectedService, selectedDate, busySlots, config, currentMinuteTick]);
 
   // Limpa o horário selecionado se o relógio avançar e ele ficar no passado
   useEffect(() => {
@@ -370,56 +476,64 @@ export default function App() {
     return `https://wa.me/${finalPhone}?text=${encodeURIComponent(message)}`;
   };
 
-  // --- FINALIZAR AGENDAMENTO PÚBLICO (SALVA NO FIRESTORE) ---
+  // --- FINALIZAR AGENDAMENTO PÚBLICO ---
+  // Grava o agendamento e os blocos de horário numa única operação atômica.
+  // Se alguém reservou o mesmo bloco antes, as regras recusam e nada é gravado.
   const handleCompleteBooking = async (e) => {
     e.preventDefault();
-    if (!clientForm.nome || !clientForm.telefone || !selectedTime) {
-      showToast('Por favor, preencha todos os campos obrigatórios.');
+    if (bookingBusy) return;
+
+    const nome = clientForm.nome.trim();
+    const telefone = clientForm.telefone.trim();
+    const phoneDigits = telefone.replace(/\D/g, '');
+
+    if (nome.length < 2 || phoneDigits.length < 10 || phoneDigits.length > 13 || !selectedTime) {
+      showToast('Preencha seu nome e o WhatsApp com DDD corretamente.');
+      return;
+    }
+    if (!consent) {
+      showToast('Para agendar, é necessário concordar com o uso dos seus dados.');
+      return;
+    }
+    const slot = availableSlots.find((s) => s.time === selectedTime);
+    if (!slot || !slot.available) {
+      showToast('Esse horário não está mais disponível. Escolha outro.');
+      setBookingStep(2);
       return;
     }
 
+    setBookingBusy(true);
     try {
       const newAptData = {
-        clienteNome: clientForm.nome,
-        clienteTelefone: clientForm.telefone,
+        clienteNome: nome.slice(0, 80),
+        clienteTelefone: telefone.slice(0, 20),
         servicoId: selectedService.id,
         servicoNome: selectedService.nome,
         preco: Number(selectedService.preco),
+        duracao: Number(selectedService.duracao),
         data: selectedDate,
         horario: selectedTime,
-        observacao: clientForm.observacao || '',
+        observacao: (clientForm.observacao || '').slice(0, 300),
         status: 'confirmado'
       };
 
-      const docRef = await addDoc(collection(db, 'appointments'), newAptData);
+      const batch = writeBatch(db);
+      const aptRef = doc(collection(db, 'appointments'));
+      batch.set(aptRef, newAptData);
+      slotTimes(selectedTime, newAptData.duracao).forEach((hora) =>
+        batch.set(doc(db, 'busy_slots', slotId(selectedDate, hora)), { data: selectedDate, hora })
+      );
+      await batch.commit();
 
-      const cleanTel = clientForm.telefone.replace(/\D/g, '');
-      const existingClient = clients.find(c => c.telefone.replace(/\D/g, '') === cleanTel);
-
-      if (existingClient) {
-        await updateDoc(doc(db, 'clients', existingClient.id), {
-          ultimoProcedimentoData: selectedDate,
-          ultimoServico: selectedService.nome
-        });
-      } else {
-        await addDoc(collection(db, 'clients'), {
-          nome: clientForm.nome,
-          telefone: clientForm.telefone,
-          alergias: 'Não informada',
-          usandoAcidos: false,
-          roacutan: false,
-          observacoes: clientForm.observacao || '',
-          ultimoProcedimentoData: selectedDate,
-          ultimoServico: selectedService.nome
-        });
-      }
-
-      setCompletedBooking({ id: docRef.id, ...newAptData });
+      setCompletedBooking({ id: aptRef.id, ...newAptData });
       setBookingStep(4);
       showToast('Agendamento realizado com sucesso!');
     } catch (error) {
       console.error(error);
-      showToast('Erro ao salvar agendamento. Verifique a conexão.');
+      showToast('Não foi possível reservar. O horário pode ter acabado de ser ocupado. Escolha outro e tente de novo.');
+      setBookingStep(2);
+    } finally {
+      setBookingBusy(false);
     }
   };
 
@@ -429,43 +543,8 @@ export default function App() {
     setSelectedTime('');
     setClientForm({ nome: '', telefone: '', observacao: '' });
     setCompletedBooking(null);
+    setConsent(false);
     setBookingStep(1);
-  };
-
-  // --- POPULAR DADOS INICIAIS NO FIRESTORE ---
-  const handleSeedData = async () => {
-    if (!window.confirm('Deseja enviar os serviços e dados iniciais para o banco de dados na nuvem?')) return;
-    try {
-      const batch = writeBatch(db);
-
-      batch.set(doc(db, 'settings', 'studio_config'), INITIAL_CONFIG);
-
-      INITIAL_SERVICES.forEach((s) => {
-        const { id, ...data } = s;
-        batch.set(doc(db, 'services', id), data);
-      });
-
-      INITIAL_CLIENTS.forEach((c) => {
-        const { id, ...data } = c;
-        batch.set(doc(db, 'clients', id), data);
-      });
-
-      INITIAL_APPOINTMENTS.forEach((a) => {
-        const { id, ...data } = a;
-        batch.set(doc(db, 'appointments', id), data);
-      });
-
-      INITIAL_TRANSACTIONS.forEach((t) => {
-        const { id, ...data } = t;
-        batch.set(doc(db, 'transactions', id), data);
-      });
-
-      await batch.commit();
-      showToast('Banco de dados populado com sucesso!');
-    } catch (error) {
-      console.error(error);
-      showToast('Erro ao popular banco. Confira as regras do Firestore.');
-    }
   };
 
   // --- CRUD CLIENTES NO FIRESTORE ---
@@ -550,13 +629,17 @@ export default function App() {
   // --- LANÇAR CAIXA FINANCEIRO NO FIRESTORE ---
   const handleAddTransaction = async (e) => {
     e.preventDefault();
-    if (!newTrans.descricao || !newTrans.valor) return;
+    const valor = parseFloat(String(newTrans.valor).replace(',', '.'));
+    if (!newTrans.descricao.trim() || !Number.isFinite(valor) || valor <= 0) {
+      showToast('Informe uma descrição e um valor maior que zero.');
+      return;
+    }
 
     try {
       await addDoc(collection(db, 'transactions'), {
         tipo: newTrans.tipo,
-        descricao: newTrans.descricao,
-        valor: parseFloat(newTrans.valor),
+        descricao: newTrans.descricao.trim().slice(0, 120),
+        valor,
         data: getTodayLocalStr()
       });
       setNewTrans({ tipo: 'receita', descricao: '', valor: '' });
@@ -570,7 +653,7 @@ export default function App() {
   const exportFinanceCSV = () => {
     let csv = 'Data;Tipo;Descrição;Valor (R$)\n';
     transactions.forEach(t => {
-      csv += `${formatDateBR(t.data)};${t.tipo.toUpperCase()};${t.descricao};${Number(t.valor).toFixed(2)}\n`;
+      csv += `${csvCell(formatDateBR(t.data))};${csvCell(String(t.tipo).toUpperCase())};${csvCell(t.descricao)};${csvCell(Number(t.valor).toFixed(2))}\n`;
     });
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -823,6 +906,11 @@ export default function App() {
                   <Scissors className="w-5 h-5 mr-2 text-[#C97A8E]" />
                   Selecione o procedimento desejado:
                 </h3>
+                {services.length === 0 && (
+                  <p className="text-sm text-gray-500 italic">
+                    Nenhum serviço disponível no momento. Fale com o estúdio pelo WhatsApp.
+                  </p>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {services.map((servico) => (
                     <div
@@ -965,6 +1053,7 @@ export default function App() {
                       type="text"
                       required
                       placeholder="Ex: Amanda Souza"
+                      maxLength={80}
                       value={clientForm.nome}
                       onChange={(e) => setClientForm({ ...clientForm, nome: e.target.value })}
                       className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#C97A8E] outline-none text-sm text-[#4A3531]"
@@ -979,6 +1068,7 @@ export default function App() {
                       type="tel"
                       required
                       placeholder="Ex: 88 99999-9999"
+                      maxLength={20}
                       value={clientForm.telefone}
                       onChange={(e) => setClientForm({ ...clientForm, telefone: e.target.value })}
                       className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#C97A8E] outline-none text-sm text-[#4A3531]"
@@ -987,11 +1077,12 @@ export default function App() {
 
                   <div>
                     <label className="block text-xs font-bold uppercase text-[#7A5C55] mb-1">
-                      Observações ou Histórico de Alergias (Opcional)
+                      Observações (Opcional)
                     </label>
                     <textarea
                       rows={3}
-                      placeholder="Ex: Tenho alergia a cera quente, uso ácido retinóico..."
+                      placeholder="Ex: prefiro um tom mais natural"
+                      maxLength={300}
                       value={clientForm.observacao}
                       onChange={(e) => setClientForm({ ...clientForm, observacao: e.target.value })}
                       className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#C97A8E] outline-none text-sm text-[#4A3531]"
@@ -1007,6 +1098,35 @@ export default function App() {
                   <p><strong>Local:</strong> {config.address}</p>
                 </div>
 
+                <p className="text-[11px] text-[#7A5C55] -mt-3">
+                  Alergias e condições de saúde são perguntadas no atendimento, em ficha própria. Não é necessário informá-las aqui.
+                </p>
+
+                <div className="space-y-2">
+                  <label className="flex items-start space-x-2 cursor-pointer text-xs text-[#4A3531]">
+                    <input
+                      type="checkbox"
+                      required
+                      checked={consent}
+                      onChange={(e) => setConsent(e.target.checked)}
+                      className="mt-0.5 rounded text-[#C97A8E] focus:ring-[#C97A8E] w-4 h-4 shrink-0"
+                    />
+                    <span>
+                      Concordo que meu nome e telefone sejam usados por {config.studioName} para registrar este
+                      agendamento e entrar em contato (inclusive pelo WhatsApp) sobre o meu atendimento. *
+                    </span>
+                  </label>
+                  <details className="text-[11px] text-[#7A5C55] bg-[#FDF8F9] rounded-xl border border-[#E6AAB8]/40 p-3">
+                    <summary className="cursor-pointer font-semibold">Como seus dados são tratados</summary>
+                    <div className="mt-2 space-y-1.5 leading-relaxed">
+                      <p><strong>Quem usa:</strong> {config.ownerName}, responsável pelo estúdio. Os dados ficam em um banco protegido e só ela tem acesso.</p>
+                      <p><strong>Para quê:</strong> registrar o agendamento, confirmar horários e avisar sobre retorno.</p>
+                      <p><strong>Por quanto tempo:</strong> enquanto você for cliente e por até 2 anos sem atendimento.</p>
+                      <p><strong>Seus direitos:</strong> pedir acesso, correção ou exclusão dos seus dados a qualquer momento, pelo WhatsApp do estúdio.</p>
+                    </div>
+                  </details>
+                </div>
+
                 <div className="pt-4 flex justify-between items-center border-t border-gray-100">
                   <button
                     type="button"
@@ -1017,10 +1137,11 @@ export default function App() {
                   </button>
                   <button
                     type="submit"
-                    className="px-6 py-3.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#C97A8E] to-[#b36376] hover:opacity-95 transition-all shadow-md flex items-center space-x-2"
+                    disabled={bookingBusy}
+                    className="px-6 py-3.5 rounded-xl text-xs font-bold text-white disabled:opacity-60 bg-gradient-to-r from-[#C97A8E] to-[#b36376] hover:opacity-95 transition-all shadow-md flex items-center space-x-2"
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Concluir Agendamento</span>
+                    <span>{bookingBusy ? 'Reservando...' : 'Concluir Agendamento'}</span>
                   </button>
                 </div>
               </form>
@@ -1125,7 +1246,7 @@ export default function App() {
                         {/* SELETOR MANUAL DE STATUS: CONFIRMADO / ATENDIDO / CANCELADO */}
                         <select
                           value={apt.status}
-                          onChange={(e) => handleUpdateAppointmentStatus(apt.id, e.target.value)}
+                          onChange={(e) => handleUpdateAppointmentStatus(apt, e.target.value)}
                           aria-label="Status do agendamento"
                           className={`text-[11px] font-bold px-2.5 py-1 rounded-full border cursor-pointer outline-none uppercase tracking-wide ${getStatusBadgeStyle(apt.status)}`}
                         >
@@ -1165,10 +1286,15 @@ export default function App() {
                       </a>
 
                       <button
-                        onClick={async () => {
-                          await deleteDoc(doc(db, 'appointments', apt.id));
-                          showToast('Agendamento excluído.');
-                        }}
+                        onClick={() => handleRegisterClientFromApt(apt)}
+                        className="p-2 text-gray-400 hover:text-[#C97A8E] rounded-xl hover:bg-[#FDF8F9]"
+                        title="Cadastrar ou atualizar a ficha desta cliente"
+                      >
+                        <User className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteAppointment(apt)}
                         className="p-2 text-gray-400 hover:text-red-500 rounded-xl hover:bg-red-50"
                         title="Excluir agendamento"
                       >
@@ -1233,7 +1359,7 @@ export default function App() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {clients
-                .filter(c => c.nome.toLowerCase().includes(searchClient.toLowerCase()) || c.telefone.includes(searchClient))
+                .filter(c => (c.nome || '').toLowerCase().includes(searchClient.toLowerCase()) || (c.telefone || '').includes(searchClient))
                 .map((client) => (
                   <div key={client.id} className="bg-white p-5 rounded-2xl border border-[#F4E4E6] shadow-sm space-y-4">
                     <div className="flex justify-between items-start border-b border-gray-100 pb-3">
@@ -1335,6 +1461,18 @@ export default function App() {
                 <span>Novo Serviço</span>
               </button>
             </div>
+
+            {services.length === 0 && (
+              <div className="bg-white p-8 rounded-3xl border border-[#F4E4E6] text-center space-y-3">
+                <p className="text-sm text-gray-500">Nenhum serviço cadastrado.</p>
+                <button
+                  onClick={handleSeedServices}
+                  className="px-4 py-2 bg-[#4A3531] text-white rounded-xl text-xs font-bold"
+                >
+                  Cadastrar serviços sugeridos
+                </button>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {services.map((servico) => (
@@ -1477,10 +1615,7 @@ export default function App() {
                       </td>
                       <td className="p-4 text-center">
                         <button
-                          onClick={async () => {
-                            await deleteDoc(doc(db, 'transactions', t.id));
-                            showToast('Lançamento removido.');
-                          }}
+                          onClick={() => handleDeleteTransaction(t.id)}
                           className="text-gray-400 hover:text-red-500"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -1585,11 +1720,12 @@ export default function App() {
             <div className="pt-4 border-t border-gray-100 flex flex-col sm:flex-row gap-3 items-center justify-between">
               <button
                 type="button"
-                onClick={handleSeedData}
-                className="px-4 py-2 text-xs font-bold text-gray-500 hover:text-red-600 flex items-center space-x-1"
+                onClick={syncBusySlots}
+                title="Recria os horários ocupados a partir dos agendamentos futuros e limpa datas passadas"
+                className="px-4 py-2 text-xs font-bold text-gray-500 hover:text-[#4A3531] flex items-center space-x-1"
               >
                 <RefreshCw className="w-3.5 h-3.5 mr-1" />
-                <span>Popular / Restaurar Dados no Firebase</span>
+                <span>Sincronizar horários ocupados</span>
               </button>
 
               <button
