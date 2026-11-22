@@ -770,7 +770,7 @@ export default function App() {
           <div className="max-w-3xl mx-auto space-y-8">
 
             {/* BANNER INSTITUCIONAL & QUEM É GEISSY SILVA */}
-            <div className="bg-gradient-to-r from-[#F4E4E6] to-[#FDF8F9] rounded-3xl p-6 sm:p-8 shadow-sm border border-[#E6AAB8]/30 flex flex-col sm:flex-row items-center gap-6">
+          <div className="bg-gradient-to-r from-[#F4E4E6] to-[#FDF8F9] rounded-3xl p-6 sm:p-8 shadow-sm border border-[#E6AAB8]/30 flex flex-col sm:flex-row items-center gap-6">
               <div className="relative">
                 <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#C97A8E] p-1 shadow-lg">
                   <div className="w-full h-full rounded-full bg-white flex items-center justify-center overflow-hidden border-2 border-white">
@@ -781,20 +781,17 @@ export default function App() {
                     />
                   </div>
                 </div>
-                <div className="absolute -bottom-1 -right-1 bg-[#4A3531] text-white text-[10px] px-2.5 py-1 rounded-full font-medium flex items-center shadow">
-                  <Sparkles className="w-3 h-3 text-[#C97A8E] mr-1" /> Specialist
-                </div>
               </div>
               <div className="text-center sm:text-left flex-1">
                 <span className="text-xs uppercase tracking-widest text-[#C97A8E] font-bold">Atendimento Exclusivo</span>
                 <h2 className="text-2xl font-bold text-[#4A3531] font-serif mt-1">{config.ownerName}</h2>
                 <p className="text-sm text-[#7A5C55] mt-1 leading-relaxed">
-                  Especialista em Epilação Feminina & Design de Sobrancelhas Personalizado. Realce sua beleza natural com técnicas delicadas e biossegurança em {config.address}.
+                  Especialista em Epilação Feminina & Design de Sobrancelhas. Realce sua beleza natural com técnicas delicadas e biossegurança em {config.address}.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2 justify-center sm:justify-start text-xs font-medium text-[#4A3531]">
-                  <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">✨ Design Simétrico</span>
-                  <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">🌿 Epilação Suave</span>
-                  <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">💖 Atendimento Individual</span>
+                  <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">Design Simétrico</span>
+                  <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">Epilação Suave</span>
+                  <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">Atendimento Personalizado</span>
                 </div>
               </div>
             </div>
