@@ -12,25 +12,33 @@ import {
   Trash2,
   Edit3,
   Search,
-  FileText,
   AlertTriangle,
-  Heart,
   ShieldAlert,
   Settings,
   Download,
   RefreshCw,
   ChevronRight,
-  Check,
   X,
   Lock,
   Scissors,
   CheckCircle2,
   CalendarCheck,
-  TrendingUp,
-  Info
+  LogOut
 } from 'lucide-react';
+import { auth, db } from './firebase';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import {
+  collection,
+  doc,
+  onSnapshot,
+  setDoc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  writeBatch
+} from 'firebase/firestore';
 
-// --- INICIALIZAÇÃO DE DADOS DE EXEMPLO (SEED DATA) ---
+// --- DADOS INICIAIS (SEED DATA) ---
 const INITIAL_SERVICES = [
   { id: '1', nome: 'Design de Sobrancelhas Personalizado', duracao: 30, preco: 35.00, descricao: 'Mapeamento facial, alinhamento simétrico e finalização com alta frequência.' },
   { id: '2', nome: 'Design com Aplicação de Henna Premium', duracao: 45, preco: 50.00, descricao: 'Design estratégico com pigmentação de alta fixação e efeito ombré.' },
@@ -107,58 +115,93 @@ const INITIAL_CONFIG = {
   lunchEnd: '13:00'
 };
 
+// Retorna a data atual no fuso horário local no formato YYYY-MM-DD
+const getTodayLocalStr = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
 export default function App() {
-  // --- ESTADOS PRINCIPAIS ---
-  const [activeTab, setActiveTab] = useState('public_booking'); // 'public_booking' | 'admin_agenda' | 'admin_clients' | 'admin_services' | 'admin_finance' | 'admin_config'
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(true);
+  // --- ESTADOS DE NAVEGAÇÃO E AUTENTICAÇÃO ---
+  const [activeTab, setActiveTab] = useState('public_booking');
+  const [adminUser, setAdminUser] = useState(null);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
 
-  // Dados salvos localmente
-  const [config, setConfig] = useState(() => {
-    const saved = localStorage.getItem('geissy_config');
-    return saved ? JSON.parse(saved) : INITIAL_CONFIG;
+  // --- DADOS SINCRONIZADOS COM FIRESTORE ---
+  const [config, setConfig] = useState(INITIAL_CONFIG);
+  const [services, setServices] = useState(INITIAL_SERVICES);
+  const [clients, setClients] = useState([]);
+  const [appointments, setAppointments] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+
+  // --- RELÓGIO INTERNO PARA ATUALIZAR HORÁRIOS PASSADOS AUTOMATICAMENTE ---
+  const [currentMinuteTick, setCurrentMinuteTick] = useState(() => {
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
   });
 
-  const [services, setServices] = useState(() => {
-    const saved = localStorage.getItem('geissy_services');
-    return saved ? JSON.parse(saved) : INITIAL_SERVICES;
-  });
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      setCurrentMinuteTick(now.getHours() * 60 + now.getMinutes());
+    }, 30000); // Atualiza a cada 30 segundos
+    return () => clearInterval(interval);
+  }, []);
 
-  const [clients, setClients] = useState(() => {
-    const saved = localStorage.getItem('geissy_clients');
-    return saved ? JSON.parse(saved) : INITIAL_CLIENTS;
-  });
+  // --- MONITORAR LOGIN ADMIN ---
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setAdminUser(user);
+    });
+    return () => unsub();
+  }, []);
 
-  const [appointments, setAppointments] = useState(() => {
-    const saved = localStorage.getItem('geissy_appointments');
-    return saved ? JSON.parse(saved) : INITIAL_APPOINTMENTS;
-  });
+  // --- ESCUTAR ALTERAÇÕES EM TEMPO REAL NO FIRESTORE ---
+  useEffect(() => {
+    const unsubConfig = onSnapshot(doc(db, 'settings', 'studio_config'), (snap) => {
+      if (snap.exists()) setConfig(snap.data());
+    });
 
-  const [transactions, setTransactions] = useState(() => {
-    const saved = localStorage.getItem('geissy_transactions');
-    return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
-  });
+    const unsubServices = onSnapshot(collection(db, 'services'), (snap) => {
+      if (!snap.empty) {
+        setServices(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      }
+    });
 
-  // Salvar no localStorage sempre que houver alteração
-  useEffect(() => { localStorage.setItem('geissy_config', JSON.stringify(config)); }, [config]);
-  useEffect(() => { localStorage.setItem('geissy_services', JSON.stringify(services)); }, [services]);
-  useEffect(() => { localStorage.setItem('geissy_clients', JSON.stringify(clients)); }, [clients]);
-  useEffect(() => { localStorage.setItem('geissy_appointments', JSON.stringify(appointments)); }, [appointments]);
-  useEffect(() => { localStorage.setItem('geissy_transactions', JSON.stringify(transactions)); }, [transactions]);
+    const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
+      setClients(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+
+    const unsubAppointments = onSnapshot(collection(db, 'appointments'), (snap) => {
+      setAppointments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+
+    const unsubTransactions = onSnapshot(collection(db, 'transactions'), (snap) => {
+      setTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+
+    return () => {
+      unsubConfig();
+      unsubServices();
+      unsubClients();
+      unsubAppointments();
+      unsubTransactions();
+    };
+  }, []);
 
   // --- ESTADO DO FLUXO DE AGENDAMENTO PÚBLICO ---
   const [selectedService, setSelectedService] = useState(null);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(getTodayLocalStr);
   const [selectedTime, setSelectedTime] = useState('');
   const [clientForm, setClientForm] = useState({ nome: '', telefone: '', observacao: '' });
   const [completedBooking, setCompletedBooking] = useState(null);
-  const [bookingStep, setBookingStep] = useState(1); // 1: catálogo, 2: data/hora, 3: dados, 4: confirmação
+  const [bookingStep, setBookingStep] = useState(1);
 
-  // --- ESTADO DA AGENDA ADMIN ---
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
-
-  // --- ESTADO DO CADASTRO/ANAMNESE DE CLIENTES ADMIN ---
+  // --- ESTADOS ADMIN ---
+  const [filterDate, setFilterDate] = useState(getTodayLocalStr);
   const [searchClient, setSearchClient] = useState('');
-  const [selectedClientDetail, setSelectedClientDetail] = useState(null);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [clientFormData, setClientFormData] = useState({
     id: '',
@@ -170,14 +213,9 @@ export default function App() {
     observacoes: ''
   });
 
-  // --- ESTADO DE GESTÃO DE SERVIÇOS ADMIN ---
   const [isServiceModalOpen, setIsServiceModalOpen] = useState(false);
-  const [serviceFormData, setServiceFormData] = useState({ id: '', nome: '', duracao: 30, preco: 0, descricao: '' });
-
-  // --- ESTADO DE GESTÃO FINANCEIRA ADMIN ---
+  const [serviceFormData, setServiceFormData] = useState({ id: '', nome: '', duracao: '30', preco: '', descricao: '' });
   const [newTrans, setNewTrans] = useState({ tipo: 'receita', descricao: '', valor: '' });
-
-  // --- MENSAGEM DE AVISO / NOTIFICAÇÃO DA UI ---
   const [toastMessage, setToastMessage] = useState('');
 
   const showToast = (msg) => {
@@ -185,7 +223,44 @@ export default function App() {
     setTimeout(() => setToastMessage(''), 4000);
   };
 
-  // --- GERADOR DE SLOTS DE HORÁRIO (15 EM 15 MIN) ---
+  // --- LOGIN E LOGOUT ADMIN ---
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      setActiveTab('admin_agenda');
+      showToast('Bem-vinda de volta, Geissy!');
+    } catch (err) {
+      showToast('E-mail ou senha inválidos. Verifique seus dados.');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleAdminLogout = async () => {
+    await signOut(auth);
+    setActiveTab('public_booking');
+    showToast('Sessão encerrada.');
+  };
+
+  // --- ALTERAR STATUS DO AGENDAMENTO (CONFIRMADO / ATENDIDO / CANCELADO) ---
+  const handleUpdateAppointmentStatus = async (aptId, newStatus) => {
+    try {
+      await updateDoc(doc(db, 'appointments', aptId), { status: newStatus });
+      const labels = {
+        confirmado: 'Confirmado',
+        atendido: 'Atendido',
+        cancelado: 'Cancelado'
+      };
+      showToast(`Status alterado para ${labels[newStatus] || newStatus}!`);
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao atualizar status do agendamento.');
+    }
+  };
+
+  // --- GERADOR DE SLOTS DE HORÁRIO (15 EM 15 MIN + BLOQUEIO DE HORÁRIO PASSADO) ---
   const availableSlots = useMemo(() => {
     if (!selectedService || !selectedDate) return [];
 
@@ -200,16 +275,17 @@ export default function App() {
     const lunchStartMinutes = lunchStartH * 60 + lunchStartM;
     const lunchEndMinutes = lunchEndH * 60 + lunchEndM;
 
-    // Agendamentos já marcados na data selecionada
+    const todayStr = getTodayLocalStr();
+    const isToday = selectedDate === todayStr;
+    const isPastDate = selectedDate < todayStr;
+
     const bookedOnDate = appointments.filter(a => a.data === selectedDate && a.status !== 'cancelado');
 
     while (current + selectedService.duracao <= endMinutes) {
       const currentEnd = current + selectedService.duracao;
-
-      // Verificar se não entra no horário de almoço
+      const isPastTime = isPastDate || (isToday && current <= currentMinuteTick);
       const isDuringLunch = (current < lunchEndMinutes && currentEnd > lunchStartMinutes);
 
-      // Verificar conflitos com agendamentos existentes
       const hasConflict = bookedOnDate.some(apt => {
         const aptServico = services.find(s => s.id === apt.servicoId);
         const aptDuracao = aptServico ? aptServico.duracao : 30;
@@ -226,29 +302,36 @@ export default function App() {
 
       slots.push({
         time: timeString,
-        available: !isDuringLunch && !hasConflict,
-        reason: isDuringLunch ? 'Almoço' : hasConflict ? 'Ocupado' : null
+        available: !isPastTime && !isDuringLunch && !hasConflict,
+        reason: isPastTime ? 'Passou' : isDuringLunch ? 'Almoço' : hasConflict ? 'Ocupado' : null
       });
 
-      current += 15; // Incrementar de 15 em 15 minutos
+      current += 15;
     }
 
     return slots;
-  }, [selectedService, selectedDate, appointments, config, services]);
+  }, [selectedService, selectedDate, appointments, config, services, currentMinuteTick]);
 
-  // --- AUXILIAR DE FORMATAÇÃO DE DATA BRASILEIRA ---
+  // Limpa o horário selecionado se o relógio avançar e ele ficar no passado
+  useEffect(() => {
+    if (!selectedTime) return;
+    const slotObj = availableSlots.find(s => s.time === selectedTime);
+    if (slotObj && !slotObj.available) {
+      setSelectedTime('');
+    }
+  }, [availableSlots, selectedTime]);
+
   const formatDateBR = (dateStr) => {
     if (!dateStr) return '';
     const [year, month, day] = dateStr.split('-');
     return `${day}/${month}/${year}`;
   };
 
-  // --- HELPER LINK WHATSAPP 1: CLIENTE -> ESTÚDIO (TELA FINAL DE CONFIRMAÇÃO DO SITE) ---
+  // --- LINKS WHATSAPP ---
   const getClientToStudioWhatsAppUrl = (booking) => {
     if (!booking) return '#';
     const cleanPhone = config.studioPhone.replace(/\D/g, '');
     const finalPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-
     const dataFormatted = formatDateBR(booking.data);
     const message =
       `Olá Geissy! ✨ Acabei de agendar um horário pelo site do *Geissy Silva Studio*:\n\n` +
@@ -257,79 +340,69 @@ export default function App() {
       `⏰ *Horário:* ${booking.horario}\n` +
       `👤 *Cliente:* ${booking.clienteNome} (${booking.clienteTelefone})\n\n` +
       `Aguardo sua confirmação! 💕`;
-
     return `https://wa.me/${finalPhone}?text=${encodeURIComponent(message)}`;
   };
 
-  // --- HELPER LINK WHATSAPP 2: ESTÚDIO -> CLIENTE (CONFIRMAÇÃO VIA AGENDA ADMIN) ---
   const getStudioToClientWhatsAppUrl = (apt) => {
     if (!apt) return '#';
     const cleanPhone = apt.clienteTelefone.replace(/\D/g, '');
     const finalPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-
     const dataFormatted = formatDateBR(apt.data);
     const message =
       `Olá *${apt.clienteNome}*! ✨ Passando para confirmar seu agendamento no *Geissy Silva Studio*:\n\n` +
       `💆‍♀️ *Procedimento:* ${apt.servicoNome}\n` +
       `📅 *Data:* ${dataFormatted}\n` +
       `⏰ *Horário:* ${apt.horario}\n` +
-      `📍 *Local:* Córrego dos Rodrigues - Aracati\n\n` +
+      `📍 *Local:* ${config.address}\n\n` +
       `Podemos confirmar sua presença? 💕`;
-
     return `https://wa.me/${finalPhone}?text=${encodeURIComponent(message)}`;
   };
 
-  // --- HELPER LINK WHATSAPP 3: LEMBRETE DE RETORNO (15/25 DIAS NO PAINEL ADMIN) ---
   const getReturnReminderWhatsAppUrl = (client, days) => {
     if (!client) return '#';
     const cleanPhone = client.telefone.replace(/\D/g, '');
     const finalPhone = cleanPhone.startsWith('55') ? cleanPhone : `55${cleanPhone}`;
-
     const message =
       `Olá *${client.nome}*! ✨ Tudo bem? Já se passaram ${days} dias desde o seu último atendimento de *${client.ultimoServico || 'Design/Epilação'}* no *Geissy Silva Studio*!\n\n` +
       `Que tal agendar a sua manutenção para manter seu olhar impecável e a pele radiante? 💖\n\n` +
-      `📍 Córrego dos Rodrigues - Aracati\n` +
+      `📍 ${config.address}\n` +
       `Agende também pelo nosso site!`;
-
     return `https://wa.me/${finalPhone}?text=${encodeURIComponent(message)}`;
   };
 
-  // --- FINALIZAR AGENDAMENTO PÚBLICO ---
-  const handleCompleteBooking = (e) => {
+  // --- FINALIZAR AGENDAMENTO PÚBLICO (SALVA NO FIRESTORE) ---
+  const handleCompleteBooking = async (e) => {
     e.preventDefault();
     if (!clientForm.nome || !clientForm.telefone || !selectedTime) {
       showToast('Por favor, preencha todos os campos obrigatórios.');
       return;
     }
 
-    const newApt = {
-      id: `apt-${Date.now()}`,
-      clienteNome: clientForm.nome,
-      clienteTelefone: clientForm.telefone,
-      servicoId: selectedService.id,
-      servicoNome: selectedService.nome,
-      preco: selectedService.preco,
-      data: selectedDate,
-      horario: selectedTime,
-      observacao: clientForm.observacao,
-      status: 'confirmado'
-    };
+    try {
+      const newAptData = {
+        clienteNome: clientForm.nome,
+        clienteTelefone: clientForm.telefone,
+        servicoId: selectedService.id,
+        servicoNome: selectedService.nome,
+        preco: Number(selectedService.preco),
+        data: selectedDate,
+        horario: selectedTime,
+        observacao: clientForm.observacao || '',
+        status: 'confirmado'
+      };
 
-    // Atualiza lista de agendamentos
-    setAppointments(prev => [...prev, newApt]);
+      const docRef = await addDoc(collection(db, 'appointments'), newAptData);
 
-    // Cadastra ou atualiza o cliente automaticamente
-    setClients(prev => {
-      const existing = prev.find(c => c.telefone.replace(/\D/g, '') === clientForm.telefone.replace(/\D/g, ''));
-      if (existing) {
-        return prev.map(c => c.id === existing.id ? {
-          ...c,
+      const cleanTel = clientForm.telefone.replace(/\D/g, '');
+      const existingClient = clients.find(c => c.telefone.replace(/\D/g, '') === cleanTel);
+
+      if (existingClient) {
+        await updateDoc(doc(db, 'clients', existingClient.id), {
           ultimoProcedimentoData: selectedDate,
           ultimoServico: selectedService.nome
-        } : c);
+        });
       } else {
-        return [...prev, {
-          id: `c-${Date.now()}`,
+        await addDoc(collection(db, 'clients'), {
           nome: clientForm.nome,
           telefone: clientForm.telefone,
           alergias: 'Não informada',
@@ -338,144 +411,209 @@ export default function App() {
           observacoes: clientForm.observacao || '',
           ultimoProcedimentoData: selectedDate,
           ultimoServico: selectedService.nome
-        }];
+        });
       }
-    });
 
-    setCompletedBooking(newApt);
-    setBookingStep(4);
-    showToast('Agendamento realizado com sucesso!');
+      setCompletedBooking({ id: docRef.id, ...newAptData });
+      setBookingStep(4);
+      showToast('Agendamento realizado com sucesso!');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao salvar agendamento. Verifique a conexão.');
+    }
   };
 
-  // --- REINICIAR FLUXO PÚBLICO ---
   const resetPublicBooking = () => {
     setSelectedService(null);
+    setSelectedDate(getTodayLocalStr());
     setSelectedTime('');
     setClientForm({ nome: '', telefone: '', observacao: '' });
     setCompletedBooking(null);
     setBookingStep(1);
   };
 
-  // --- POPULAR DADOS INICIAIS (RESTAURAR DEMO) ---
-  const handleSeedData = () => {
-    if (window.confirm('Deseja restaurar os dados originais do Geissy Silva Studio?')) {
-      setConfig(INITIAL_CONFIG);
-      setServices(INITIAL_SERVICES);
-      setClients(INITIAL_CLIENTS);
-      setAppointments(INITIAL_APPOINTMENTS);
-      setTransactions(INITIAL_TRANSACTIONS);
-      showToast('Dados demonstrativos restaurados com sucesso!');
+  // --- POPULAR DADOS INICIAIS NO FIRESTORE ---
+  const handleSeedData = async () => {
+    if (!window.confirm('Deseja enviar os serviços e dados iniciais para o banco de dados na nuvem?')) return;
+    try {
+      const batch = writeBatch(db);
+
+      batch.set(doc(db, 'settings', 'studio_config'), INITIAL_CONFIG);
+
+      INITIAL_SERVICES.forEach((s) => {
+        const { id, ...data } = s;
+        batch.set(doc(db, 'services', id), data);
+      });
+
+      INITIAL_CLIENTS.forEach((c) => {
+        const { id, ...data } = c;
+        batch.set(doc(db, 'clients', id), data);
+      });
+
+      INITIAL_APPOINTMENTS.forEach((a) => {
+        const { id, ...data } = a;
+        batch.set(doc(db, 'appointments', id), data);
+      });
+
+      INITIAL_TRANSACTIONS.forEach((t) => {
+        const { id, ...data } = t;
+        batch.set(doc(db, 'transactions', id), data);
+      });
+
+      await batch.commit();
+      showToast('Banco de dados populado com sucesso!');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao popular banco. Confira as regras do Firestore.');
     }
   };
 
-  // --- ADICIONAR / EDITAR CLIENTE ADMIN ---
-  const handleSaveClient = (e) => {
+  // --- CRUD CLIENTES NO FIRESTORE ---
+  const handleSaveClient = async (e) => {
     e.preventDefault();
     if (!clientFormData.nome || !clientFormData.telefone) {
       showToast('Nome e Telefone são obrigatórios');
       return;
     }
 
-    if (clientFormData.id) {
-      setClients(prev => prev.map(c => c.id === clientFormData.id ? clientFormData : c));
-      showToast('Ficha de Anamnese atualizada!');
-    } else {
-      const newC = { ...clientFormData, id: `c-${Date.now()}` };
-      setClients(prev => [...prev, newC]);
-      showToast('Cliente cadastrada com sucesso!');
+    try {
+      const { id, ...data } = clientFormData;
+      if (id) {
+        await updateDoc(doc(db, 'clients', id), data);
+        showToast('Ficha de Anamnese atualizada!');
+      } else {
+        await addDoc(collection(db, 'clients'), data);
+        showToast('Cliente cadastrada com sucesso!');
+      }
+      setIsClientModalOpen(false);
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao salvar cliente.');
     }
-    setIsClientModalOpen(false);
   };
 
-  // --- ADICIONAR / EDITAR SERVIÇO ADMIN ---
-  const handleSaveService = (e) => {
+  // --- CRUD SERVIÇOS E PREÇOS NO FIRESTORE ---
+  const handleSaveService = async (e) => {
     e.preventDefault();
-    if (!serviceFormData.nome || serviceFormData.preco <= 0) {
-      showToast('Informe o nome e um preço válido para o serviço.');
+    const numericPrice = parseFloat(String(serviceFormData.preco).replace(',', '.')) || 0;
+    const numericDuration = parseInt(serviceFormData.duracao, 10) || 15;
+
+    if (!serviceFormData.nome || numericPrice <= 0) {
+      showToast('Informe o nome e um preço maior que zero.');
       return;
     }
 
-    if (serviceFormData.id) {
-      setServices(prev => prev.map(s => s.id === serviceFormData.id ? serviceFormData : s));
-      showToast('Serviço atualizado com sucesso!');
-    } else {
-      const newS = { ...serviceFormData, id: `s-${Date.now()}` };
-      setServices(prev => [...prev, newS]);
-      showToast('Novo serviço cadastrado!');
+    try {
+      const { id, ...rawData } = serviceFormData;
+      const data = {
+        ...rawData,
+        duracao: numericDuration,
+        preco: numericPrice
+      };
+
+      if (id) {
+        await setDoc(doc(db, 'services', id), data, { merge: true });
+        showToast('Serviço e preço atualizados na nuvem!');
+      } else {
+        await addDoc(collection(db, 'services'), data);
+        showToast('Novo serviço cadastrado!');
+      }
+      setIsServiceModalOpen(false);
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao salvar serviço no Firebase.');
     }
-    setIsServiceModalOpen(false);
   };
 
-  // --- EXCLUIR SERVIÇO ---
-  const handleDeleteService = (id) => {
-    if (window.confirm('Tem certeza que deseja excluir este serviço?')) {
-      setServices(prev => prev.filter(s => s.id !== id));
+  const handleDeleteService = async (id) => {
+    if (!window.confirm('Tem certeza que deseja excluir este serviço?')) return;
+    try {
+      await deleteDoc(doc(db, 'services', id));
       showToast('Serviço removido.');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao excluir serviço.');
     }
   };
 
-  // --- LANÇAR CAIXA FINANCEIRO ---
-  const handleAddTransaction = (e) => {
+  // --- SALVAR CONFIGURAÇÕES NO FIRESTORE ---
+  const handleSaveConfig = async () => {
+    try {
+      await setDoc(doc(db, 'settings', 'studio_config'), config, { merge: true });
+      showToast('Configurações salvas na nuvem com sucesso!');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao salvar configurações.');
+    }
+  };
+
+  // --- LANÇAR CAIXA FINANCEIRO NO FIRESTORE ---
+  const handleAddTransaction = async (e) => {
     e.preventDefault();
     if (!newTrans.descricao || !newTrans.valor) return;
 
-    const t = {
-      id: `t-${Date.now()}`,
-      tipo: newTrans.tipo,
-      descricao: newTrans.descricao,
-      valor: parseFloat(newTrans.valor),
-      data: new Date().toISOString().split('T')[0]
-    };
-
-    setTransactions(prev => [t, ...prev]);
-    setNewTrans({ tipo: 'receita', descricao: '', valor: '' });
-    showToast('Lançamento registrado no caixa!');
+    try {
+      await addDoc(collection(db, 'transactions'), {
+        tipo: newTrans.tipo,
+        descricao: newTrans.descricao,
+        valor: parseFloat(newTrans.valor),
+        data: getTodayLocalStr()
+      });
+      setNewTrans({ tipo: 'receita', descricao: '', valor: '' });
+      showToast('Lançamento registrado no caixa!');
+    } catch (error) {
+      console.error(error);
+      showToast('Erro ao registrar lançamento.');
+    }
   };
 
-  // --- EXPORTAR EXCEL/CSV DO CAIXA ---
   const exportFinanceCSV = () => {
     let csv = 'Data;Tipo;Descrição;Valor (R$)\n';
     transactions.forEach(t => {
-      csv += `${formatDateBR(t.data)};${t.tipo.toUpperCase()};${t.descricao};${t.valor.toFixed(2)}\n`;
+      csv += `${formatDateBR(t.data)};${t.tipo.toUpperCase()};${t.descricao};${Number(t.valor).toFixed(2)}\n`;
     });
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `relatorio_caixa_geissy_silva_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `relatorio_caixa_geissy_silva_${getTodayLocalStr()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  // CÁLCULOS DO FINANCEIRO
-  const totalReceitas = transactions.filter(t => t.tipo === 'receita').reduce((acc, t) => acc + t.valor, 0);
-  const totalDespesas = transactions.filter(t => t.tipo === 'despesa').reduce((acc, t) => acc + t.valor, 0);
+  const totalReceitas = transactions.filter(t => t.tipo === 'receita').reduce((acc, t) => acc + Number(t.valor), 0);
+  const totalDespesas = transactions.filter(t => t.tipo === 'despesa').reduce((acc, t) => acc + Number(t.valor), 0);
   const saldoCaixa = totalReceitas - totalDespesas;
+
+  const getStatusBadgeStyle = (status) => {
+    if (status === 'atendido') return 'bg-green-100 text-green-800 border-green-300';
+    if (status === 'cancelado') return 'bg-red-100 text-red-700 border-red-300';
+    return 'bg-amber-100 text-amber-800 border-amber-300';
+  };
 
   return (
     <div className="min-h-screen bg-[#FDF8F9] text-[#4A3531] font-sans flex flex-col antialiased">
 
       {/* NOTIFICAÇÃO TOAST */}
       {toastMessage && (
-        <div className="fixed bottom-5 right-5 z-50 bg-[#4A3531] text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-3 border border-[#C97A8E]/30 animate-bounce">
+        <div className="fixed bottom-5 right-5 z-50 bg-[#4A3531] text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-3 border border-[#C97A8E]/30">
           <Sparkles className="w-5 h-5 text-[#C97A8E]" />
           <span className="text-sm font-medium">{toastMessage}</span>
         </div>
       )}
 
-{/* HEADER / NAVEGAÇÃO PRINCIPAL */}
+      {/* HEADER / NAVEGAÇÃO PRINCIPAL */}
       <header className="bg-white border-b border-[#F4E4E6] sticky top-0 z-40 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-2">
 
           {/* BRANDING */}
           <div className="flex items-center sm:space-x-3 cursor-pointer" onClick={() => setActiveTab('public_booking')}>
-            {/* Logo oculta no mobile (hidden) e visível a partir de 640px (sm:flex) */}
             <div className="hidden sm:flex w-11 h-11 bg-gradient-to-tr from-[#C97A8E] to-[#E6AAB8] rounded-full items-center justify-center text-white shadow-md shrink-0 overflow-hidden">
-              <img 
-                src={`${import.meta.env.BASE_URL}logo.jpg`} 
-                alt="Geissy Silva Studio" 
-                className="w-full h-full object-cover rounded-full" 
+              <img
+                src={`${import.meta.env.BASE_URL}logo.jpg`}
+                alt="Geissy Silva Studio"
+                className="w-full h-full object-cover rounded-full"
               />
             </div>
             <div>
@@ -489,7 +627,7 @@ export default function App() {
             </div>
           </div>
 
-       {/* NAVEGAÇÃO ENTRE VISÃO CLIENTE E PAINEL ADMIN */}
+          {/* NAVEGAÇÃO ENTRE VISÃO CLIENTE E PAINEL ADMIN */}
           <nav className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
             <button
               onClick={() => { setActiveTab('public_booking'); resetPublicBooking(); }}
@@ -503,9 +641,8 @@ export default function App() {
               <span className="hidden md:inline">Agendamento Online</span>
             </button>
 
-            {/* Mantenha o onClick original que já está no seu botão Painel Admin */}
-           <button
-              onClick={() => setActiveTab('admin_agenda')}
+            <button
+              onClick={() => setActiveTab(adminUser ? 'admin_agenda' : 'admin_login')}
               className={`px-3 py-2 sm:px-4 sm:py-2 rounded-full text-xs sm:text-sm font-medium transition-all duration-200 flex items-center space-x-1.5 sm:space-x-2 whitespace-nowrap ${
                 activeTab !== 'public_booking'
                   ? 'bg-[#C97A8E] text-white shadow-sm'
@@ -518,45 +655,56 @@ export default function App() {
             </button>
           </nav>
         </div>
-        
-        {/* SUBMENU ADMIN */}
-        {activeTab.startsWith('admin_') && (
+
+        {/* SUBMENU ADMIN (VISÍVEL APENAS QUANDO LOGADA) */}
+        {adminUser && activeTab.startsWith('admin_') && activeTab !== 'admin_login' && (
           <div className="bg-[#4A3531] text-white text-xs border-t border-[#7A5C55]/30">
-            <div className="max-w-7xl mx-auto px-4 flex overflow-x-auto space-x-6 py-2.5 scrollbar-none">
+            <div className="max-w-7xl mx-auto px-4 flex items-center justify-between overflow-x-auto py-2.5 scrollbar-none">
+              <div className="flex space-x-6">
+                <button
+                  onClick={() => setActiveTab('admin_agenda')}
+                  className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_agenda' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
+                >
+                  <CalendarCheck className="w-4 h-4" />
+                  <span>Agenda do Dia</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('admin_clients')}
+                  className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_clients' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
+                >
+                  <User className="w-4 h-4" />
+                  <span>Clientes & Anamnese</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('admin_services')}
+                  className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_services' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
+                >
+                  <Scissors className="w-4 h-4" />
+                  <span>Serviços & Preços</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('admin_finance')}
+                  className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_finance' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
+                >
+                  <DollarSign className="w-4 h-4" />
+                  <span>Caixa Simples</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('admin_config')}
+                  className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_config' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
+                >
+                  <Settings className="w-4 h-4" />
+                  <span>Configurações</span>
+                </button>
+              </div>
+
               <button
-                onClick={() => setActiveTab('admin_agenda')}
-                className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_agenda' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
+                onClick={handleAdminLogout}
+                className="ml-6 flex items-center space-x-1 text-rose-200 hover:text-white whitespace-nowrap"
+                title="Sair do Painel Admin"
               >
-                <CalendarCheck className="w-4 h-4" />
-                <span>Agenda do Dia</span>
-              </button>
-              <button
-                onClick={() => setActiveTab('admin_clients')}
-                className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_clients' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
-              >
-                <User className="w-4 h-4" />
-                <span>Clientes & Anamnese</span>
-              </button>
-              <button
-                onClick={() => setActiveTab('admin_services')}
-                className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_services' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
-              >
-                <Scissors className="w-4 h-4" />
-                <span>Serviços & Preços</span>
-              </button>
-              <button
-                onClick={() => setActiveTab('admin_finance')}
-                className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_finance' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
-              >
-                <DollarSign className="w-4 h-4" />
-                <span>Caixa Simples</span>
-              </button>
-              <button
-                onClick={() => setActiveTab('admin_config')}
-                className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_config' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
-              >
-                <Settings className="w-4 h-4" />
-                <span>Configurações</span>
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sair</span>
               </button>
             </div>
           </div>
@@ -565,6 +713,55 @@ export default function App() {
 
       {/* CONTEÚDO PRINCIPAL */}
       <main className="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        {/* =================================================================== */}
+        {/* TELA DE LOGIN DO PAINEL ADMIN                                       */}
+        {/* =================================================================== */}
+        {activeTab === 'admin_login' && !adminUser && (
+          <div className="max-w-md mx-auto bg-white p-8 rounded-3xl border border-[#F4E4E6] shadow-lg space-y-6">
+            <div className="text-center space-y-2">
+              <div className="w-14 h-14 bg-[#FDF8F9] text-[#C97A8E] rounded-full flex items-center justify-center mx-auto border border-[#E6AAB8]/40">
+                <Lock className="w-6 h-6" />
+              </div>
+              <h2 className="text-xl font-bold text-[#4A3531] font-serif">Acesso Administrativo</h2>
+              <p className="text-xs text-[#7A5C55]">Área restrita para gestão de agenda, preços e clientes.</p>
+            </div>
+
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-[#7A5C55] mb-1">E-mail</label>
+                <input
+                  type="email"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="geissy@studio.com"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#C97A8E] outline-none text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-[#7A5C55] mb-1">Senha</label>
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#C97A8E] outline-none text-sm"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loginLoading}
+                className="w-full py-3.5 rounded-xl text-xs font-bold text-white bg-[#4A3531] hover:bg-[#382724] transition-all shadow-md"
+              >
+                {loginLoading ? 'Entrando...' : 'Entrar no Painel'}
+              </button>
+            </form>
+          </div>
+        )}
 
         {/* =================================================================== */}
         {/* VISÃO 1: AGENDAMENTO PÚBLICO (CLIENTE -> ESTÚDIO)                    */}
@@ -577,10 +774,11 @@ export default function App() {
               <div className="relative">
                 <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#C97A8E] p-1 shadow-lg">
                   <div className="w-full h-full rounded-full bg-white flex items-center justify-center overflow-hidden border-2 border-white">
-                  <img 
-  src={`${import.meta.env.BASE_URL}perfil.jpg`} 
-  alt="Geissy Silva" 
-  className="w-full h-full object-cover rounded-full"/>
+                    <img
+                      src={`${import.meta.env.BASE_URL}perfil.jpg`}
+                      alt="Geissy Silva"
+                      className="w-full h-full object-cover rounded-full"
+                    />
                   </div>
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-[#4A3531] text-white text-[10px] px-2.5 py-1 rounded-full font-medium flex items-center shadow">
@@ -589,9 +787,9 @@ export default function App() {
               </div>
               <div className="text-center sm:text-left flex-1">
                 <span className="text-xs uppercase tracking-widest text-[#C97A8E] font-bold">Atendimento Exclusivo</span>
-                <h2 className="text-2xl font-bold text-[#4A3531] font-serif mt-1">Geissy Silva</h2>
+                <h2 className="text-2xl font-bold text-[#4A3531] font-serif mt-1">{config.ownerName}</h2>
                 <p className="text-sm text-[#7A5C55] mt-1 leading-relaxed">
-                  Especialista em Epilação Feminina & Design de Sobrancelhas Personalizado. Realce sua beleza natural com técnicas delicadas e biossegurança em Córrego dos Rodrigues - Aracati.
+                  Especialista em Epilação Feminina & Design de Sobrancelhas Personalizado. Realce sua beleza natural com técnicas delicadas e biossegurança em {config.address}.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2 justify-center sm:justify-start text-xs font-medium text-[#4A3531]">
                   <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">✨ Design Simétrico</span>
@@ -639,12 +837,12 @@ export default function App() {
                       className="bg-white p-5 rounded-2xl border border-[#F4E4E6] hover:border-[#C97A8E] shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer flex flex-col justify-between group"
                     >
                       <div>
-                        <div className="flex justify-between items-start">
+                        <div className="flex justify-between items-start gap-2">
                           <h4 className="font-bold text-[#4A3531] text-base group-hover:text-[#C97A8E] transition-colors">
                             {servico.nome}
                           </h4>
-                          <span className="font-bold text-[#C97A8E] text-lg">
-                            R$ {servico.preco.toFixed(2)}
+                          <span className="font-bold text-[#C97A8E] text-lg whitespace-nowrap">
+                            R$ {Number(servico.preco).toFixed(2)}
                           </span>
                         </div>
                         <p className="text-xs text-[#7A5C55] mt-2 leading-relaxed">
@@ -673,7 +871,7 @@ export default function App() {
                   <div>
                     <span className="text-xs text-[#7A5C55]">Procedimento selecionado:</span>
                     <h3 className="text-lg font-bold text-[#4A3531]">{selectedService.nome}</h3>
-                    <p className="text-xs text-[#C97A8E] font-semibold">R$ {selectedService.preco.toFixed(2)} • {selectedService.duracao} min</p>
+                    <p className="text-xs text-[#C97A8E] font-semibold">R$ {Number(selectedService.preco).toFixed(2)} • {selectedService.duracao} min</p>
                   </div>
                   <button
                     onClick={() => setBookingStep(1)}
@@ -683,7 +881,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* CAMPO SELEÇÃO DE DATA */}
                 <div>
                   <label className="block text-sm font-semibold text-[#4A3531] mb-2 flex items-center">
                     <Calendar className="w-4 h-4 mr-2 text-[#C97A8E]" />
@@ -691,7 +888,7 @@ export default function App() {
                   </label>
                   <input
                     type="date"
-                    min={new Date().toISOString().split('T')[0]}
+                    min={getTodayLocalStr()}
                     value={selectedDate}
                     onChange={(e) => {
                       setSelectedDate(e.target.value);
@@ -701,7 +898,6 @@ export default function App() {
                   />
                 </div>
 
-                {/* GRADE DE HORÁRIOS */}
                 <div>
                   <label className="block text-sm font-semibold text-[#4A3531] mb-3 flex items-center">
                     <Clock className="w-4 h-4 mr-2 text-[#C97A8E]" />
@@ -806,13 +1002,12 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* RESUMO DO AGENDAMENTO */}
                 <div className="bg-[#FDF8F9] p-4 rounded-2xl border border-[#E6AAB8]/40 space-y-1 text-xs text-[#7A5C55]">
                   <p className="font-bold text-[#4A3531] text-sm mb-1">Resumo da Reserva:</p>
                   <p><strong>Procedimento:</strong> {selectedService.nome}</p>
                   <p><strong>Data:</strong> {formatDateBR(selectedDate)} às {selectedTime}</p>
-                  <p><strong>Valor:</strong> R$ {selectedService.preco.toFixed(2)}</p>
-                  <p><strong>Local:</strong> Córrego dos Rodrigues - Aracati, CE</p>
+                  <p><strong>Valor:</strong> R$ {Number(selectedService.preco).toFixed(2)}</p>
+                  <p><strong>Local:</strong> {config.address}</p>
                 </div>
 
                 <div className="pt-4 flex justify-between items-center border-t border-gray-100">
@@ -834,7 +1029,7 @@ export default function App() {
               </form>
             )}
 
-            {/* PASSO 4: TELA FINAL DE CONFIRMAÇÃO DO AGENDAMENTO (CLIENTE -> ESTÚDIO) */}
+            {/* PASSO 4: CONFIRMAÇÃO */}
             {bookingStep === 4 && completedBooking && (
               <div className="bg-white p-8 rounded-3xl border border-[#F4E4E6] shadow-xl text-center space-y-6">
                 <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto shadow-inner">
@@ -845,7 +1040,7 @@ export default function App() {
                   <span className="text-xs font-bold text-[#C97A8E] uppercase tracking-widest">Reserva Solicitada com Sucesso</span>
                   <h3 className="text-2xl font-bold text-[#4A3531] font-serif mt-1">Quase lá, {completedBooking.clienteNome}!</h3>
                   <p className="text-sm text-[#7A5C55] mt-2 max-w-md mx-auto">
-                    Para finalizar e garantir seu horário na agenda de Geissy Silva, envie o comprovante do agendamento para o WhatsApp do estúdio abaixo.
+                    Para finalizar e garantir seu horário na agenda de {config.ownerName}, envie o comprovante do agendamento para o WhatsApp do estúdio abaixo.
                   </p>
                 </div>
 
@@ -864,11 +1059,10 @@ export default function App() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Valor Total:</span>
-                    <span className="font-bold text-[#C97A8E]">R$ {completedBooking.preco.toFixed(2)}</span>
+                    <span className="font-bold text-[#C97A8E]">R$ {Number(completedBooking.preco).toFixed(2)}</span>
                   </div>
                 </div>
 
-                {/* BOTÃO PRINCIPAL WHATSAPP: CLIENTE -> ESTÚDIO */}
                 <div className="pt-2 max-w-md mx-auto space-y-3">
                   <a
                     href={getClientToStudioWhatsAppUrl(completedBooking)}
@@ -895,12 +1089,12 @@ export default function App() {
         {/* =================================================================== */}
         {/* VISÃO 2: ADMIN - AGENDA DO DIA                                       */}
         {/* =================================================================== */}
-        {activeTab === 'admin_agenda' && (
+        {adminUser && activeTab === 'admin_agenda' && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-3xl border border-[#F4E4E6] shadow-sm">
               <div>
                 <h2 className="text-xl font-bold text-[#4A3531] font-serif">Agenda de Atendimentos</h2>
-                <p className="text-xs text-[#7A5C55]">Gerencie os horários marcados e confirme com as clientes.</p>
+                <p className="text-xs text-[#7A5C55]">Gerencie os horários marcados e atualize o status do atendimento.</p>
               </div>
 
               <div className="flex items-center space-x-3">
@@ -914,7 +1108,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* CARDS DA AGENDA */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {appointments
                 .filter(a => a.data === filterDate)
@@ -922,22 +1115,33 @@ export default function App() {
                 .map((apt) => (
                   <div
                     key={apt.id}
-                    className="bg-white p-5 rounded-2xl border border-[#F4E4E6] shadow-sm hover:shadow-md transition-all flex flex-col justify-between"
+                    className={`bg-white p-5 rounded-2xl border shadow-sm hover:shadow-md transition-all flex flex-col justify-between ${
+                      apt.status === 'cancelado' ? 'border-red-200 opacity-75' : 'border-[#F4E4E6]'
+                    }`}
                   >
                     <div className="space-y-3">
-                      <div className="flex justify-between items-start">
+                      <div className="flex justify-between items-center gap-2">
                         <span className="px-3 py-1 bg-[#F4E4E6] text-[#4A3531] font-bold text-sm rounded-lg flex items-center">
                           <Clock className="w-3.5 h-3.5 mr-1 text-[#C97A8E]" /> {apt.horario}
                         </span>
-                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                          apt.status === 'confirmado' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                        }`}>
-                          {apt.status.toUpperCase()}
-                        </span>
+
+                        {/* SELETOR MANUAL DE STATUS: CONFIRMADO / ATENDIDO / CANCELADO */}
+                        <select
+                          value={apt.status}
+                          onChange={(e) => handleUpdateAppointmentStatus(apt.id, e.target.value)}
+                          aria-label="Status do agendamento"
+                          className={`text-[11px] font-bold px-2.5 py-1 rounded-full border cursor-pointer outline-none uppercase tracking-wide ${getStatusBadgeStyle(apt.status)}`}
+                        >
+                          <option value="confirmado">Confirmado</option>
+                          <option value="atendido">Atendido</option>
+                          <option value="cancelado">Cancelado</option>
+                        </select>
                       </div>
 
                       <div>
-                        <h4 className="font-bold text-[#4A3531] text-base">{apt.clienteNome}</h4>
+                        <h4 className={`font-bold text-[#4A3531] text-base ${apt.status === 'cancelado' ? 'line-through text-gray-400' : ''}`}>
+                          {apt.clienteNome}
+                        </h4>
                         <p className="text-xs text-[#7A5C55] flex items-center mt-0.5">
                           <Phone className="w-3 h-3 mr-1 text-gray-400" /> {apt.clienteTelefone}
                         </p>
@@ -945,33 +1149,31 @@ export default function App() {
 
                       <div className="bg-[#FDF8F9] p-3 rounded-xl border border-gray-100 text-xs text-[#4A3531]">
                         <p className="font-semibold">{apt.servicoNome}</p>
-                        <p className="text-[#C97A8E] font-bold mt-1">R$ {apt.preco.toFixed(2)}</p>
+                        <p className="text-[#C97A8E] font-bold mt-1">R$ {Number(apt.preco).toFixed(2)}</p>
                         {apt.observacao && (
                           <p className="text-gray-500 text-[11px] mt-1 italic">Obs: {apt.observacao}</p>
                         )}
                       </div>
                     </div>
 
-                    {/* AÇÕES DA AGENDA (ESTÚDIO -> CLIENTE) */}
                     <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between gap-2">
                       <a
                         href={getStudioToClientWhatsAppUrl(apt)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex-1 py-2 px-3 bg-green-50 text-green-700 hover:bg-green-100 rounded-xl text-xs font-bold border border-green-200 flex items-center justify-center space-x-1"
-                        title="Enviar confirmação do Estúdio para o WhatsApp da Cliente"
                       >
                         <MessageCircle className="w-3.5 h-3.5" />
                         <span>Confirmar no WhatsApp</span>
                       </a>
 
                       <button
-                        onClick={() => {
-                          setAppointments(prev => prev.filter(a => a.id !== apt.id));
-                          showToast('Agendamento removido.');
+                        onClick={async () => {
+                          await deleteDoc(doc(db, 'appointments', apt.id));
+                          showToast('Agendamento excluído.');
                         }}
                         className="p-2 text-gray-400 hover:text-red-500 rounded-xl hover:bg-red-50"
-                        title="Cancelar"
+                        title="Excluir agendamento"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -992,7 +1194,7 @@ export default function App() {
         {/* =================================================================== */}
         {/* VISÃO 3: ADMIN - CLIENTES & FICHA DE ANAMNESE CLINICA               */}
         {/* =================================================================== */}
-        {activeTab === 'admin_clients' && (
+        {adminUser && activeTab === 'admin_clients' && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-3xl border border-[#F4E4E6] shadow-sm">
               <div>
@@ -1024,7 +1226,7 @@ export default function App() {
                     });
                     setIsClientModalOpen(true);
                   }}
-                  className="px-4 py-2 bg-[#4A3531] text-white rounded-xl text-xs font-bold flex items-center space-x-1"
+                  className="px-4 py-2 bg-[#4A3531] text-white rounded-xl text-xs font-bold flex items-center space-x-1 whitespace-nowrap"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Nova Cliente</span>
@@ -1032,7 +1234,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* LISTA DE CLIENTES COM ANAMNESE E LEMBRETE 15/25 DIAS */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {clients
                 .filter(c => c.nome.toLowerCase().includes(searchClient.toLowerCase()) || c.telefone.includes(searchClient))
@@ -1056,7 +1257,6 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* ANAMNESE E ALERTAS */}
                     <div className="space-y-2 text-xs">
                       <div className="flex flex-wrap gap-2">
                         {client.usandoAcidos && (
@@ -1087,7 +1287,6 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* BOTÕES DE RETORNO (15 / 25 DIAS) VIA WHATSAPP */}
                     <div className="pt-3 border-t border-gray-100 flex items-center justify-between gap-2 text-xs">
                       <span className="text-gray-400 font-medium text-[11px]">Lembrete de Retorno:</span>
                       <div className="flex space-x-2">
@@ -1096,7 +1295,6 @@ export default function App() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="px-2.5 py-1.5 bg-[#FDF8F9] hover:bg-[#F4E4E6] text-[#4A3531] rounded-lg font-bold border border-[#E6AAB8]/40 flex items-center space-x-1"
-                          title="Enviar lembrete de 15 dias"
                         >
                           <MessageCircle className="w-3 h-3 text-green-600" />
                           <span>15 Dias</span>
@@ -1106,7 +1304,6 @@ export default function App() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="px-2.5 py-1.5 bg-[#FDF8F9] hover:bg-[#F4E4E6] text-[#4A3531] rounded-lg font-bold border border-[#E6AAB8]/40 flex items-center space-x-1"
-                          title="Enviar lembrete de 25 dias"
                         >
                           <MessageCircle className="w-3 h-3 text-green-600" />
                           <span>25 Dias</span>
@@ -1122,17 +1319,17 @@ export default function App() {
         {/* =================================================================== */}
         {/* VISÃO 4: ADMIN - SERVIÇOS E PREÇOS                                 */}
         {/* =================================================================== */}
-        {activeTab === 'admin_services' && (
+        {adminUser && activeTab === 'admin_services' && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-3xl border border-[#F4E4E6] shadow-sm">
               <div>
                 <h2 className="text-xl font-bold text-[#4A3531] font-serif">Catálogo de Serviços</h2>
-                <p className="text-xs text-[#7A5C55]">Configure o tempo de atendimento e preços exibidos para as clientes.</p>
+                <p className="text-xs text-[#7A5C55]">Configure o tempo de atendimento e preços exibidos para as clientes em tempo real.</p>
               </div>
 
               <button
                 onClick={() => {
-                  setServiceFormData({ id: '', nome: '', duracao: 30, preco: 0, descricao: '' });
+                  setServiceFormData({ id: '', nome: '', duracao: '30', preco: '', descricao: '' });
                   setIsServiceModalOpen(true);
                 }}
                 className="px-4 py-2 bg-[#4A3531] text-white rounded-xl text-xs font-bold flex items-center space-x-1"
@@ -1146,9 +1343,9 @@ export default function App() {
               {services.map((servico) => (
                 <div key={servico.id} className="bg-white p-5 rounded-2xl border border-[#F4E4E6] shadow-sm flex flex-col justify-between">
                   <div>
-                    <div className="flex justify-between items-start">
+                    <div className="flex justify-between items-start gap-2">
                       <h4 className="font-bold text-[#4A3531] text-base">{servico.nome}</h4>
-                      <span className="font-bold text-[#C97A8E] text-base">R$ {servico.preco.toFixed(2)}</span>
+                      <span className="font-bold text-[#C97A8E] text-base whitespace-nowrap">R$ {Number(servico.preco).toFixed(2)}</span>
                     </div>
                     <p className="text-xs text-gray-500 mt-2">{servico.descricao}</p>
                     <p className="text-xs font-semibold text-[#7A5C55] mt-3 flex items-center">
@@ -1159,16 +1356,22 @@ export default function App() {
                   <div className="mt-4 pt-3 border-t border-gray-100 flex justify-end space-x-2">
                     <button
                       onClick={() => {
-                        setServiceFormData(servico);
+                        setServiceFormData({
+                          ...servico,
+                          duracao: String(servico.duracao ?? ''),
+                          preco: servico.preco !== undefined && servico.preco !== null ? String(servico.preco) : ''
+                        });
                         setIsServiceModalOpen(true);
                       }}
                       className="p-2 text-gray-500 hover:text-[#4A3531] rounded-lg"
+                      title="Editar Serviço ou Preço"
                     >
                       <Edit3 className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => handleDeleteService(servico.id)}
                       className="p-2 text-gray-400 hover:text-red-500 rounded-lg"
+                      title="Excluir Serviço"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -1182,9 +1385,8 @@ export default function App() {
         {/* =================================================================== */}
         {/* VISÃO 5: ADMIN - CAIXA SIMPLES & FINANCEIRO                         */}
         {/* =================================================================== */}
-        {activeTab === 'admin_finance' && (
+        {adminUser && activeTab === 'admin_finance' && (
           <div className="space-y-6">
-            {/* CARDS DE RESUMO */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white p-6 rounded-3xl border border-[#F4E4E6] shadow-sm">
                 <span className="text-xs text-gray-500 font-bold uppercase">Entradas (Receitas)</span>
@@ -1202,7 +1404,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* FORMULÁRIO DE NOVO LANÇAMENTO & EXPORTAR */}
             <div className="bg-white p-6 rounded-3xl border border-[#F4E4E6] shadow-sm space-y-4">
               <div className="flex justify-between items-center border-b border-gray-100 pb-3">
                 <h3 className="font-bold text-[#4A3531] text-base">Registrar Lançamento no Caixa</h3>
@@ -1251,8 +1452,7 @@ export default function App() {
               </form>
             </div>
 
-            {/* TABELA DE MOVIMENTAÇÕES */}
-            <div className="bg-white rounded-3xl border border-[#F4E4E6] shadow-sm overflow-hidden">
+            <div className="bg-white rounded-3xl border border-[#F4E4E6] shadow-sm overflow-x-auto">
               <table className="w-full text-left text-xs text-[#4A3531]">
                 <thead className="bg-[#FDF8F9] border-b border-gray-100 font-bold uppercase text-gray-500">
                   <tr>
@@ -1276,11 +1476,14 @@ export default function App() {
                       </td>
                       <td className="p-4">{t.descricao}</td>
                       <td className={`p-4 text-right font-bold ${t.tipo === 'receita' ? 'text-green-600' : 'text-red-500'}`}>
-                        {t.tipo === 'receita' ? '+' : '-'} R$ {t.valor.toFixed(2)}
+                        {t.tipo === 'receita' ? '+' : '-'} R$ {Number(t.valor).toFixed(2)}
                       </td>
                       <td className="p-4 text-center">
                         <button
-                          onClick={() => setTransactions(prev => prev.filter(item => item.id !== t.id))}
+                          onClick={async () => {
+                            await deleteDoc(doc(db, 'transactions', t.id));
+                            showToast('Lançamento removido.');
+                          }}
                           className="text-gray-400 hover:text-red-500"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -1297,7 +1500,7 @@ export default function App() {
         {/* =================================================================== */}
         {/* VISÃO 6: ADMIN - CONFIGURAÇÕES DO ESTÚDIO                           */}
         {/* =================================================================== */}
-        {activeTab === 'admin_config' && (
+        {adminUser && activeTab === 'admin_config' && (
           <div className="max-w-2xl mx-auto bg-white p-8 rounded-3xl border border-[#F4E4E6] shadow-sm space-y-6">
             <h2 className="text-xl font-bold text-[#4A3531] font-serif border-b border-gray-100 pb-3">
               Configurações do Estúdio
@@ -1382,20 +1585,20 @@ export default function App() {
               </div>
             </div>
 
-            <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
+            <div className="pt-4 border-t border-gray-100 flex flex-col sm:flex-row gap-3 items-center justify-between">
               <button
                 type="button"
                 onClick={handleSeedData}
                 className="px-4 py-2 text-xs font-bold text-gray-500 hover:text-red-600 flex items-center space-x-1"
               >
                 <RefreshCw className="w-3.5 h-3.5 mr-1" />
-                <span>Popular / Restaurar Dados Iniciais</span>
+                <span>Popular / Restaurar Dados no Firebase</span>
               </button>
 
               <button
                 type="button"
-                onClick={() => showToast('Configurações salvas com sucesso!')}
-                className="px-6 py-2.5 bg-[#4A3531] text-white text-xs font-bold rounded-xl hover:bg-[#382724]"
+                onClick={handleSaveConfig}
+                className="w-full sm:w-auto px-6 py-2.5 bg-[#4A3531] text-white text-xs font-bold rounded-xl hover:bg-[#382724]"
               >
                 Salvar Configurações
               </button>
@@ -1405,7 +1608,7 @@ export default function App() {
 
       </main>
 
-      {/* MODAL CADASTRAR/EDITAR CLIENTE E FICHA DE ANAMNESE */}
+      {/* MODAL CADASTRAR/EDITAR CLIENTE */}
       {isClientModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-lg rounded-3xl p-6 sm:p-8 space-y-4 shadow-2xl">
@@ -1441,7 +1644,6 @@ export default function App() {
                 />
               </div>
 
-              {/* ANAMNESE CLINICA */}
               <div className="bg-[#FDF8F9] p-4 rounded-2xl border border-[#E6AAB8]/40 space-y-3">
                 <span className="font-bold text-[#C97A8E] block uppercase tracking-wider text-[10px]">
                   Ficha de Anamnese Clínica
@@ -1540,9 +1742,15 @@ export default function App() {
                   <input
                     type="number"
                     step="15"
+                    min="15"
                     required
                     value={serviceFormData.duracao}
-                    onChange={(e) => setServiceFormData({ ...serviceFormData, duracao: parseInt(e.target.value) || 15 })}
+                    onChange={(e) => setServiceFormData({ ...serviceFormData, duracao: e.target.value })}
+                    onBlur={() => {
+                      if (!serviceFormData.duracao) {
+                        setServiceFormData({ ...serviceFormData, duracao: '15' });
+                      }
+                    }}
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
                   />
                 </div>
@@ -1552,9 +1760,15 @@ export default function App() {
                   <input
                     type="number"
                     step="0.01"
-                    required
+                    min="0"
+                    placeholder="0.00"
                     value={serviceFormData.preco}
-                    onChange={(e) => setServiceFormData({ ...serviceFormData, preco: parseFloat(e.target.value) || 0 })}
+                    onChange={(e) => setServiceFormData({ ...serviceFormData, preco: e.target.value })}
+                    onBlur={() => {
+                      if (serviceFormData.preco === '' || serviceFormData.preco === null || serviceFormData.preco === undefined) {
+                        setServiceFormData({ ...serviceFormData, preco: '0' });
+                      }
+                    }}
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none text-sm"
                   />
                 </div>
