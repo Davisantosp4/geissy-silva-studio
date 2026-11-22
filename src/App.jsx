@@ -471,7 +471,11 @@ export default function App() {
           {/* BRANDING */}
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('public_booking')}>
             <div className="w-11 h-11 bg-gradient-to-tr from-[#C97A8E] to-[#E6AAB8] rounded-full flex items-center justify-center text-white shadow-md">
-              <Scissors className="w-6 h-6 transform -rotate-45" />
+              <img 
+  src={`${import.meta.env.BASE_URL}logo.jpg`} 
+  alt="Geissy Silva Studio" 
+  className="w-full h-full object-cover rounded-full" 
+/>
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight text-[#4A3531] font-serif">
@@ -570,7 +574,11 @@ export default function App() {
               <div className="relative">
                 <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#C97A8E] p-1 shadow-lg">
                   <div className="w-full h-full rounded-full bg-white flex items-center justify-center overflow-hidden border-2 border-white">
-                    <User className="w-14 h-14 text-[#C97A8E]" />
+                    <img 
+  src={`${import.meta.env.BASE_URL}perfil.jpg`} 
+  alt="Geissy Silva" 
+  className="w-full h-full object-cover rounded-full" 
+/>
                   </div>
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-[#4A3531] text-white text-[10px] px-2.5 py-1 rounded-full font-medium flex items-center shadow">
