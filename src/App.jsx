@@ -504,8 +504,8 @@ export default function App() {
             </button>
 
             {/* Mantenha o onClick original que já está no seu botão Painel Admin */}
-            <button
-              onClick={() => setActiveTab('admin')}
+           <button
+              onClick={() => setActiveTab('admin_agenda')}
               className={`px-3 py-2 sm:px-4 sm:py-2 rounded-full text-xs sm:text-sm font-medium transition-all duration-200 flex items-center space-x-1.5 sm:space-x-2 whitespace-nowrap ${
                 activeTab !== 'public_booking'
                   ? 'bg-[#C97A8E] text-white shadow-sm'
@@ -518,7 +518,7 @@ export default function App() {
             </button>
           </nav>
         </div>
-
+        
         {/* SUBMENU ADMIN */}
         {activeTab.startsWith('admin_') && (
           <div className="bg-[#4A3531] text-white text-xs border-t border-[#7A5C55]/30">
