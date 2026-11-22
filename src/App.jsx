@@ -517,6 +517,7 @@ export default function App() {
               <span className="hidden sm:inline">Painel Admin</span>
             </button>
           </nav>
+        </div>
 
         {/* SUBMENU ADMIN */}
         {activeTab.startsWith('admin_') && (
