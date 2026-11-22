@@ -464,57 +464,59 @@ export default function App() {
         </div>
       )}
 
-      {/* HEADER / NAVEGAÇÃO PRINCIPAL */}
+{/* HEADER / NAVEGAÇÃO PRINCIPAL */}
       <header className="bg-white border-b border-[#F4E4E6] sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-2">
 
           {/* BRANDING */}
-          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('public_booking')}>
-            <div className="w-11 h-11 bg-gradient-to-tr from-[#C97A8E] to-[#E6AAB8] rounded-full flex items-center justify-center text-white shadow-md">
+          <div className="flex items-center sm:space-x-3 cursor-pointer" onClick={() => setActiveTab('public_booking')}>
+            {/* Logo oculta no mobile (hidden) e visível a partir de 640px (sm:flex) */}
+            <div className="hidden sm:flex w-11 h-11 bg-gradient-to-tr from-[#C97A8E] to-[#E6AAB8] rounded-full items-center justify-center text-white shadow-md shrink-0 overflow-hidden">
               <img 
-  src={`${import.meta.env.BASE_URL}logo.jpg`} 
-  alt="Geissy Silva Studio" 
-  className="w-full h-full object-cover rounded-full" 
-/>
+                src={`${import.meta.env.BASE_URL}logo.jpg`} 
+                alt="Geissy Silva Studio" 
+                className="w-full h-full object-cover rounded-full" 
+              />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-[#4A3531] font-serif">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight text-[#4A3531] font-serif leading-tight">
                 {config.studioName}
               </h1>
-              <p className="text-xs text-[#7A5C55] flex items-center">
-                <MapPin className="w-3 h-3 mr-1 text-[#C97A8E]" />
-                {config.address}
+              <p className="text-[11px] sm:text-xs text-[#7A5C55] flex items-center mt-0.5">
+                <MapPin className="w-3 h-3 mr-1 text-[#C97A8E] shrink-0" />
+                <span>{config.address}</span>
               </p>
             </div>
           </div>
 
-          {/* NAVEGAÇÃO ENTRE VISÃO CLIENTE E PAINEL ADMIN */}
-          <nav className="flex items-center space-x-2">
+       {/* NAVEGAÇÃO ENTRE VISÃO CLIENTE E PAINEL ADMIN */}
+          <nav className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
             <button
               onClick={() => { setActiveTab('public_booking'); resetPublicBooking(); }}
-              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 flex items-center space-x-2 ${
+              className={`p-2.5 sm:px-4 sm:py-2 rounded-full text-sm font-medium transition-all duration-200 flex items-center sm:space-x-2 ${
                 activeTab === 'public_booking'
                   ? 'bg-[#C97A8E] text-white shadow-sm'
                   : 'text-[#7A5C55] hover:bg-[#FDF8F9]'
               }`}
             >
-              <Calendar className="w-4 h-4" />
+              <Calendar className="w-4 h-4 shrink-0" />
               <span className="hidden md:inline">Agendamento Online</span>
             </button>
 
+            {/* Mantenha o onClick original que já está no seu botão Painel Admin */}
             <button
-              onClick={() => setActiveTab('admin_agenda')}
-              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 flex items-center space-x-2 ${
-                activeTab.startsWith('admin_')
-                  ? 'bg-[#4A3531] text-white shadow-sm'
-                  : 'bg-[#F4E4E6] text-[#4A3531] hover:bg-[#E6AAB8]/30'
+              onClick={() => setActiveTab('admin')}
+              className={`px-3 py-2 sm:px-4 sm:py-2 rounded-full text-xs sm:text-sm font-medium transition-all duration-200 flex items-center space-x-1.5 sm:space-x-2 whitespace-nowrap ${
+                activeTab !== 'public_booking'
+                  ? 'bg-[#C97A8E] text-white shadow-sm'
+                  : 'bg-[#FDF8F9] text-[#7A5C55] hover:bg-[#F4E4E6]'
               }`}
             >
-              <Lock className="w-4 h-4 text-[#C97A8E]" />
-              <span>Painel Admin</span>
+              <Lock className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+              <span className="sm:hidden">Admin</span>
+              <span className="hidden sm:inline">Painel Admin</span>
             </button>
           </nav>
-        </div>
 
         {/* SUBMENU ADMIN */}
         {activeTab.startsWith('admin_') && (
@@ -574,11 +576,10 @@ export default function App() {
               <div className="relative">
                 <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#C97A8E] p-1 shadow-lg">
                   <div className="w-full h-full rounded-full bg-white flex items-center justify-center overflow-hidden border-2 border-white">
-                    <img 
+                  <img 
   src={`${import.meta.env.BASE_URL}perfil.jpg`} 
   alt="Geissy Silva" 
-  className="w-full h-full object-cover rounded-full" 
-/>
+  className="w-full h-full object-cover rounded-full"/>
                   </div>
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-[#4A3531] text-white text-[10px] px-2.5 py-1 rounded-full font-medium flex items-center shadow">
