@@ -673,7 +673,7 @@ export default function App() {
                   className={`flex items-center space-x-1.5 whitespace-nowrap pb-0.5 ${activeTab === 'admin_clients' ? 'text-[#C97A8E] font-bold border-b-2 border-[#C97A8E]' : 'text-gray-300 hover:text-white'}`}
                 >
                   <User className="w-4 h-4" />
-                  <span>Clientes & Anamnese</span>
+                  <span>Clientes</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('admin_services')}
@@ -786,7 +786,7 @@ export default function App() {
                 <span className="text-xs uppercase tracking-widest text-[#C97A8E] font-bold">Atendimento Exclusivo</span>
                 <h2 className="text-2xl font-bold text-[#4A3531] font-serif mt-1">{config.ownerName}</h2>
                 <p className="text-sm text-[#7A5C55] mt-1 leading-relaxed">
-                  Especialista em Epilação Feminina & Design de Sobrancelhas. Realce sua beleza natural com técnicas delicadas e biossegurança em {config.address}.
+                  Especialista em Epilação Feminina & Design de Sobrancelhas. Realce sua beleza natural com técnicas delicadas. {config.address}.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2 justify-center sm:justify-start text-xs font-medium text-[#4A3531]">
                   <span className="bg-white/80 px-3 py-1 rounded-full border border-[#E6AAB8]/40">Design Simétrico</span>
@@ -1195,7 +1195,7 @@ export default function App() {
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-3xl border border-[#F4E4E6] shadow-sm">
               <div>
-                <h2 className="text-xl font-bold text-[#4A3531] font-serif">Clientes & Anamnese Clínica</h2>
+                <h2 className="text-xl font-bold text-[#4A3531] font-serif">Clientes</h2>
                 <p className="text-xs text-[#7A5C55]">Histórico de atendimentos, alertas de uso de ácidos e lealdade.</p>
               </div>
 
